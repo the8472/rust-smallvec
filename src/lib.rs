@@ -1176,6 +1176,30 @@ impl<A: Array> SmallVec<A> {
         }
     }
 
+    /// If SmallVec is spilled temporarily extract a Vec holding the heap allocation while
+    /// emptying the SmallVec. Once the wrapper is dropped the Vec allocation is moved back
+    /// into the SmallVec.
+    ///
+    /// This way Vec methods can be used with `&mut self` instead of having to use `self.into_vec()`
+    fn temp_vec(&mut self) -> Option<TempVec<A::Item, A>> {
+        if self.spilled() {
+            let vec = unsafe {
+                let (ptr, len) = self.data.heap();
+                Vec::from_raw_parts(ptr, len, self.capacity)
+            };
+
+            self.capacity = 0;
+            self.data = SmallVecData::from_inline(MaybeUninit::uninit());
+
+            return Some(TempVec {
+                smallvec: self,
+                vec
+            })
+        }
+
+        None
+    }
+
     /// Converts a `SmallVec` into a `Box<[T]>` without reallocating if the `SmallVec` has already spilled
     /// onto the heap.
     ///
@@ -1720,8 +1744,14 @@ where
 impl<A: Array> FromIterator<A::Item> for SmallVec<A> {
     #[inline]
     fn from_iter<I: IntoIterator<Item = A::Item>>(iterable: I) -> SmallVec<A> {
+        let iter = iterable.into_iter();
+        let (lower_bound, _) = iter.size_hint();
+        if lower_bound > SmallVec::<A>::inline_capacity() {
+            let vec: Vec<_> = iter.collect();
+            return SmallVec::from_vec(vec);
+        }
         let mut v = SmallVec::new();
-        v.extend(iterable);
+        v.extend(iter);
         v
     }
 }
@@ -1731,6 +1761,11 @@ impl<A: Array> Extend<A::Item> for SmallVec<A> {
         let mut iter = iterable.into_iter();
         let (lower_size_bound, _) = iter.size_hint();
         self.reserve(lower_size_bound);
+
+        if let Some(mut temp_vec) = self.temp_vec() {
+            temp_vec.vec.extend(iter);
+            return;
+        }
 
         unsafe {
             let (ptr, len_ptr, cap) = self.triple_mut();
@@ -2096,5 +2131,21 @@ where
     #[inline]
     fn to_smallvec(&self) -> SmallVec<A> {
         SmallVec::from_slice(self)
+    }
+}
+
+struct TempVec<'a, T, A: Array<Item=T>> {
+    smallvec: &'a mut SmallVec<A>,
+    vec: Vec<T>
+}
+
+impl<T, A: Array<Item=T>> Drop for TempVec<'_, T, A> {
+    fn drop(&mut self) {
+        let mut vec = mem::take(&mut self.vec);
+        let (ptr, cap, len) = (vec.as_mut_ptr(), vec.capacity(), vec.len());
+        mem::forget(vec);
+
+        self.smallvec.capacity = cap;
+        self.smallvec.data = SmallVecData::from_heap(ptr, len);
     }
 }
