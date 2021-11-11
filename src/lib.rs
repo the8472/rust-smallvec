@@ -1426,6 +1426,26 @@ impl<A: Array> SmallVec<A> {
         // additional safety constraints on the contents of the slice.
         self.triple_mut().0
     }
+
+    #[inline]
+    fn extend_small<I: Iterator<Item = A::Item>>(&mut self, mut iter: I) {
+        unsafe {
+            let (ptr, len_ptr, cap) = self.triple_mut();
+            let mut len = SetLenOnDrop::new(len_ptr);
+            while len.get() < cap {
+                if let Some(out) = iter.next() {
+                    ptr::write(ptr.add(len.get()), out);
+                    len.increment_len(1);
+                } else {
+                    return;
+                }
+            }
+        }
+
+        for elem in iter {
+            self.push(elem);
+        }
+    }
 }
 
 impl<A: Array> SmallVec<A>
@@ -1751,14 +1771,14 @@ impl<A: Array> FromIterator<A::Item> for SmallVec<A> {
             return SmallVec::from_vec(vec);
         }
         let mut v = SmallVec::new();
-        v.extend(iter);
+        v.extend_small(iter);
         v
     }
 }
 
 impl<A: Array> Extend<A::Item> for SmallVec<A> {
     fn extend<I: IntoIterator<Item = A::Item>>(&mut self, iterable: I) {
-        let mut iter = iterable.into_iter();
+        let iter = iterable.into_iter();
         let (lower_size_bound, _) = iter.size_hint();
         self.reserve(lower_size_bound);
 
@@ -1767,22 +1787,7 @@ impl<A: Array> Extend<A::Item> for SmallVec<A> {
             return;
         }
 
-        unsafe {
-            let (ptr, len_ptr, cap) = self.triple_mut();
-            let mut len = SetLenOnDrop::new(len_ptr);
-            while len.get() < cap {
-                if let Some(out) = iter.next() {
-                    ptr::write(ptr.add(len.get()), out);
-                    len.increment_len(1);
-                } else {
-                    return;
-                }
-            }
-        }
-
-        for elem in iter {
-            self.push(elem);
-        }
+        self.extend_small(iter);
     }
 }
 
