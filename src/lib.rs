@@ -1427,7 +1427,6 @@ impl<A: Array> SmallVec<A> {
         self.triple_mut().0
     }
 
-    #[inline]
     fn extend_small<I: Iterator<Item = A::Item>>(&mut self, mut iter: I) {
         unsafe {
             let (ptr, len_ptr, cap) = self.triple_mut();
